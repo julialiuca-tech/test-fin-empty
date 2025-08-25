@@ -3,7 +3,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 import seaborn as sns
 
-
+# code 
 def prep_data(data_dir):
     """
     Prepares the data for exploration. 
