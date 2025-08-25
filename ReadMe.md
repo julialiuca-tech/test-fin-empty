@@ -31,17 +31,6 @@ The free edition of the Anaconda distribution of Python available from https://w
 - IPython
 - requests
 
-### Examples
-
-| Example | Description |
-| :-- | :-- |
-| **1_Read_And_Analyze_Submissions.ipynb** | This example reads submissions for one calendar quarter from Financial Statement Data Sets into a Pandas data frame. You will find code for generating descriptive statistics, filtering data by numeric and/or text matching criteria, grouping data and computing group sizes. The visualizations use the pyplot library.  |
-| **2_Read_Multiple_Data_Sets.ipynb** | This example reads submissions for four calendar quarters from Financial Statement Data Sets. You will find code for concatenating four quarters of data into a single data frame, constructing a new column in data frame and visualizing the data using the new column. |
-| **3_Find_Numeric_Facts.ipynb** | This example joins submissions with numeric data sets to search for numeric facts for some companies and create a visual comparison across companies. |
-| **4_Find_Dimensional_Facts.ipynb** | This example joins submissions, numeric and dimensions data sets to search for dimensional facts. |
-| **5_Find_Narrative_Text_Facts.ipynb** | This example joins submissions and text data sets to search for narrative facts and create an Excel download file for search results.|
-| **6_Find_Custom_Facts.ipynb** |  This example joins submissions, numeric and tags data sets to search for custom facts. |
-
 ### Installation
 
 To run these examples, you need to install the required Python libraries. You can install them using pip:
@@ -80,3 +69,4 @@ OR
 
 
 **Suggestions directed to StructuredData@sec.gov regarding code examples are welcome.**
+
