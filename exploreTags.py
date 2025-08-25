@@ -3,7 +3,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 import seaborn as sns
 
-# code 
+
 def prep_data(data_dir):
     """
     Prepares the data for exploration. 
@@ -711,15 +711,15 @@ def round_to_nearest_quarter_days(interval_days):
 
 
 if __name__ == "__main__": 
-    # data_dir = ['examples/data/2022q1', 
-    #             'examples/data/2022q2', 
-    #             'examples/data/2022q3', 
-    #             'examples/data/2022q4']
-    # df_joined = prep_data(data_dir) 
-    # top_tags(df_joined)  
+    data_dir = ['data/2022q1', 
+                'data/2022q2', 
+                'data/2022q3', 
+                'data/2022q4']
+    df_joined = prep_data(data_dir) 
+    top_tags(df_joined)  
     
     # now focus on Q1 data only
-    data_dir = ['examples/data/2022q1']
+    data_dir = ['data/2022q1']
     df_joined = prep_data(data_dir) 
 
     ## Run percent tag analysis for 2022q1
