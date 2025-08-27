@@ -49,8 +49,8 @@ def download_and_unzip(url, extract_to='.'):
     print("Extraction complete.")
     
     
-download_and_unzip("https://www.sec.gov/files/dera/data/financial-statement-data-sets/2022q1.zip", extract_to="examples/data/2022q1")
-download_and_unzip("https://www.sec.gov/files/dera/data/financial-statement-data-sets/2022q2.zip", extract_to="examples/data/2022q2")
-download_and_unzip("https://www.sec.gov/files/dera/data/financial-statement-data-sets/2022q3.zip", extract_to="examples/data/2022q3")
-download_and_unzip("https://www.sec.gov/files/dera/data/financial-statement-data-sets/2022q4.zip", extract_to="examples/data/2022q4")
-download_and_unzip("https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2024_02_notes.zip", extract_to="examples/data/2024_02_notes")
+download_and_unzip("https://www.sec.gov/files/dera/data/financial-statement-data-sets/2022q1.zip", extract_to="data/2022q1")
+download_and_unzip("https://www.sec.gov/files/dera/data/financial-statement-data-sets/2022q2.zip", extract_to="data/2022q2")
+download_and_unzip("https://www.sec.gov/files/dera/data/financial-statement-data-sets/2022q3.zip", extract_to="data/2022q3")
+download_and_unzip("https://www.sec.gov/files/dera/data/financial-statement-data-sets/2022q4.zip", extract_to="data/2022q4")
+# download_and_unzip("https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2024_02_notes.zip", extract_to="examples/data/2024_02_notes")
