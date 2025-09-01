@@ -2,10 +2,30 @@ from utility_data import prep_data, QUARTER_DAYS, DAYS_TO_QUARTER, print_featuri
 import pandas as pd
 import numpy as np
 import os 
+
+# =============================================================================
+# CONSTANTS AND CONFIGURATION
+# =============================================================================
+
+# Directory paths
 SAVE_DIR = '/Users/juanliu/Workspace/git_test/SEC_data_explore/processed_data/'
+DATA_BASE_DIR = 'data/'
+
+# File names
+FEATURIZED_ALL_QUARTERS_FILE = 'featurized_all_quarters.csv'
+FEATURE_COMPLETENESS_RANKING_FILE = 'feature_completeness_ranking.csv'
+
+# Quarter file naming pattern
+QUARTER_FEATURIZED_PATTERN = '{}_featurized.csv'  # Format: 2022q1_featurized.csv
+
+# Default parameters
+DEFAULT_K_TOP_TAGS = 250
+DEFAULT_N_QUARTERS = 4
+DEFAULT_MIN_COMPLETENESS = 15.0
+DEFAULT_DEBUG_FLAG = True
 
 
-def segment_group_summary(df_joined, form_type, debug_print=True):
+def segment_group_summary(df_joined, form_type, debug_print=DEFAULT_DEBUG_FLAG):
     """
     Utility function to identify segment groups in SEC filings and return 
     summary records.
@@ -182,7 +202,7 @@ def segment_group_summary(df_joined, form_type, debug_print=True):
 
 
 
-def history_comparisons(df, N_quarters=4, debug_print=True):
+def history_comparisons(df, N_quarters=DEFAULT_N_QUARTERS, debug_print=DEFAULT_DEBUG_FLAG):
     """
     Performs historical comparisons for SEC filing data.
     
@@ -285,8 +305,8 @@ def history_comparisons(df, N_quarters=4, debug_print=True):
     return grouped_history
 
 
-def organize_feature_dataframe(grouped_history, df_tags_to_featurize, N_quarters=4, 
-                               debug_print=True):
+def organize_feature_dataframe(grouped_history, df_tags_to_featurize, N_quarters=DEFAULT_N_QUARTERS, 
+                               debug_print=DEFAULT_DEBUG_FLAG):
     """
     Reorganizes the grouped_history dataframe into a featurized format with columns for
     current values and historical percentage changes for each tag.
@@ -516,8 +536,8 @@ def summarize_feature_completeness(df_features):
     return feature_completeness_df 
 
 
-def featurize_quarter_data(data_directory, df_tags_to_featurize, N_quarters=4, 
-                           debug_print=True):
+def featurize_quarter_data(data_directory, df_tags_to_featurize, N_quarters=DEFAULT_N_QUARTERS, 
+                           debug_print=DEFAULT_DEBUG_FLAG):
     """
     Top-level function to featurize quarterly SEC data for both 10-Q and 10-K forms.
     Args:
@@ -570,15 +590,16 @@ def featurize_quarter_data(data_directory, df_tags_to_featurize, N_quarters=4,
 
 
 def featurize_multi_qtrs(data_directories, 
-                         df_tags_to_featurize, N_quarters=4, 
-                         save_dir= SAVE_DIR, 
-                         debug_print=True):
+                         df_tags_to_featurize, N_quarters=DEFAULT_N_QUARTERS, 
+                         save_dir=SAVE_DIR, 
+                         debug_print=DEFAULT_DEBUG_FLAG):
     """
     Top-level function to featurize multiple quarters of SEC data.
     """
     df_featurized_all_quarters = pd.DataFrame()
     for (i_dir, data_directory) in enumerate(data_directories):
-        save_file = save_dir + data_directory.split('/')[-1] + '_featurized.csv'
+        quarter_name = data_directory.split('/')[-1]
+        save_file = os.path.join(save_dir, QUARTER_FEATURIZED_PATTERN.format(quarter_name))
         if os.path.exists(save_file):
             df_featurized_quarter = pd.read_csv(save_file)
         else:
@@ -589,34 +610,94 @@ def featurize_multi_qtrs(data_directories,
             df_featurized_quarter.to_csv(save_file, index=False)
 
         print(f"Featurized {data_directory} with shape: {df_featurized_quarter.shape}")
-
+        df_featurized_quarter['data_qtr'] = quarter_name
+        
         if i_dir == 0:
             df_featurized_all_quarters = df_featurized_quarter.copy()
         else:
             df_featurized_all_quarters = \
-                df_featurized_all_quarters.set_index(['cik', 'period']).combine_first(
-                    df_featurized_quarter.set_index(['cik', 'period'])
+                df_featurized_all_quarters.set_index(['cik', 'period', 'data_qtr']).combine_first(
+                    df_featurized_quarter.set_index(['cik', 'period', 'data_qtr'])
                 ).reset_index()
 
     completeness_stats = summarize_feature_completeness(df_featurized_all_quarters)
-    completeness_stats.to_csv(save_dir + 'feature_completeness_ranking.csv', index=False)
+    completeness_stats.to_csv(os.path.join(save_dir, FEATURE_COMPLETENESS_RANKING_FILE), index=False)
 
-    df_featurized_all_quarters.to_csv(save_dir + 'featurized_all_quarters.csv', index=False)
+    df_featurized_all_quarters.to_csv(os.path.join(save_dir, FEATURIZED_ALL_QUARTERS_FILE), index=False)
+
+
+def simply_featurized_data(processed_data_dir=SAVE_DIR, min_completeness=DEFAULT_MIN_COMPLETENESS):
+    """
+    Simplify the featurized data by keeping only well-populated features and removing duplicates.
+    
+    This function:
+    1. Reads the featurized_all_quarters.csv file
+    2. Reads the feature_completeness_ranking.csv file
+    3. Keeps only columns that are more than min_completeness% populated
+    4. For duplicate (cik, period) combinations, retains only the most recent record (max data_qtr)
+    
+    Args:
+        processed_data_dir (str): Directory containing the processed data files
+        min_completeness (float): Minimum completeness percentage to keep features (default: 15.0)
+        
+    Returns:
+        pd.DataFrame: Simplified featurized data with well-populated features and no duplicates
+    """
+    # Step 1: Read the featurized_all_quarters.csv file
+    featurized_file = os.path.join(processed_data_dir, FEATURIZED_ALL_QUARTERS_FILE)
+    if not os.path.exists(featurized_file):
+        raise FileNotFoundError(f"Featurized data file not found: {featurized_file}")
+    
+    df_featurized = pd.read_csv(featurized_file, low_memory=False)
+    print(f"📊 Input data shape: {df_featurized.shape}")
+    
+    # Step 2: Read the feature_completeness_ranking.csv file
+    ranking_file = os.path.join(processed_data_dir, FEATURE_COMPLETENESS_RANKING_FILE)
+    if not os.path.exists(ranking_file):
+        raise FileNotFoundError(f"Feature completeness ranking file not found: {ranking_file}")
+    
+    df_ranking = pd.read_csv(ranking_file)
+    
+    # Step 3: Keep only columns that are more than min_completeness% populated
+    well_populated_features = df_ranking[df_ranking['non_null_percentage'] > min_completeness]['feature'].tolist()
+    
+    # Identify columns to keep (cik, period, data_qtr + well-populated features)
+    base_columns = ['cik', 'period', 'data_qtr']
+    available_base_columns = [col for col in base_columns if col in df_featurized.columns]
+    available_features = [col for col in well_populated_features if col in df_featurized.columns]
+    columns_to_keep = available_base_columns + available_features
+    
+    # Filter the dataframe to keep only selected columns
+    df_simplified = df_featurized[columns_to_keep].copy()
+    
+    # Step 4: Handle duplicate (cik, period) combinations
+    # Check for duplicates before processing
+    duplicate_check = df_simplified.groupby(['cik', 'period']).size()
+    duplicates = duplicate_check[duplicate_check > 1]
+    
+    if len(duplicates) > 0:
+        # Sort by data_qtr to ensure we get the most recent record
+        # data_qtr strings like "2022q1", "2022q2" are already lexicographically sortable
+        df_simplified = df_simplified.sort_values(['cik', 'period', 'data_qtr'], ascending=[True, True, False])
+        df_simplified = df_simplified.drop_duplicates(subset=['cik', 'period'], keep='first')
+    
+    print(f"📊 Output data shape: {df_simplified.shape}")
+    
+    return df_simplified
 
 
 if __name__ == "__main__": 
 
     # Create tags to featurize (this can be reused across multiple quarters)
-    df_tags_to_featurize = read_tags_to_featurize(K_top_tags=250)
+    df_tags_to_featurize = read_tags_to_featurize(K_top_tags=DEFAULT_K_TOP_TAGS)
     
-    # Find all quarter directories in the 'data/' directory
-    data_base_dir = 'data/'
+    # Find all quarter directories in the data directory
     quarter_directories = []
     
-    if os.path.exists(data_base_dir):
+    if os.path.exists(DATA_BASE_DIR):
         # Get all subdirectories in data/ that look like quarters (e.g., 2022q1, 2022q2, etc.)
-        for item in os.listdir(data_base_dir):
-            item_path = os.path.join(data_base_dir, item)
+        for item in os.listdir(DATA_BASE_DIR):
+            item_path = os.path.join(DATA_BASE_DIR, item)
             if os.path.isdir(item_path) and ('q' in item.lower() or 'quarter' in item.lower()):
                 quarter_directories.append(item_path)
     
@@ -630,6 +711,4 @@ if __name__ == "__main__":
     if quarter_directories:
         # Process all quarters using featurize_multi_qtrs
         print(f"\nProcessing all quarters with featurize_multi_qtrs...")
-        df_featurized_all = featurize_multi_qtrs(quarter_directories, df_tags_to_featurize, N_quarters=4) 
-    
-        
+        featurize_multi_qtrs(quarter_directories, df_tags_to_featurize, N_quarters=DEFAULT_N_QUARTERS)

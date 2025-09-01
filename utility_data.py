@@ -25,11 +25,13 @@ def clean_cik_dup_submissions(submissions):
     A company (cik) should file only one submission (adsh) for any given (form, period) tuple.
     If multiple submissions are found for the same (cik, form, period), ALL submissions 
     from that combination are removed to maintain data quality.
+    For instance, in 2022q4, we have 2 submissions submissions from
+     (cik==1590364) & (period==20220930)]
+    This breaks the segments feature. 
     
     Args:
         submissions (DataFrame): DataFrame containing submission data with columns 
                                ['adsh', 'cik', 'form', 'period', ...]
-    
     Returns:
         DataFrame: Cleaned submissions dataframe with problematic combinations removed
     """
