@@ -1,4 +1,4 @@
-from utility_data import prep_data, QUARTER_DAYS, DAYS_TO_QUARTER, print_featurization, read_tags_to_featurize
+from utility_data import prep_data, QUARTER_DAYS, DAYS_TO_QUARTER, print_featurization, read_tags_to_featurize, get_cik_to_ticker_mapping
 import pandas as pd
 import numpy as np
 import os 
@@ -14,6 +14,7 @@ DATA_BASE_DIR = 'data/'
 # File names
 FEATURIZED_ALL_QUARTERS_FILE = 'featurized_all_quarters.csv'
 FEATURE_COMPLETENESS_RANKING_FILE = 'feature_completeness_ranking.csv'
+FEATURIZED_SIMPLIFIED_FILE = 'featurized_simplified.csv'
 
 # Quarter file naming pattern
 QUARTER_FEATURIZED_PATTERN = '{}_featurized.csv'  # Format: 2022q1_featurized.csv
@@ -190,7 +191,7 @@ def segment_group_summary(df_joined, form_type, debug_print=DEFAULT_DEBUG_FLAG):
     
     # Print summary statistics
     if debug_print: 
-        print(f"SEGMENT GROUP SUMMARY - {form_type} FORMS") 
+        print(f"SEGMENT GROUP SUMMARY - {form_type} FORMS")
         print(f"Total segment groups processed: {len(segment_group):,}")
         print(f"Total summary records created: {len(df_summary):,}")
         print(f"Summary records by reason:")
@@ -626,15 +627,16 @@ def featurize_multi_qtrs(data_directories,
     df_featurized_all_quarters.to_csv(os.path.join(save_dir, FEATURIZED_ALL_QUARTERS_FILE), index=False)
 
 
-def simply_featurized_data(processed_data_dir=SAVE_DIR, min_completeness=DEFAULT_MIN_COMPLETENESS):
+def simplify_featurized_data(processed_data_dir=SAVE_DIR, min_completeness=DEFAULT_MIN_COMPLETENESS):
     """
     Simplify the featurized data by keeping only well-populated features and removing duplicates.
     
     This function:
     1. Reads the featurized_all_quarters.csv file
-    2. Reads the feature_completeness_ranking.csv file
-    3. Keeps only columns that are more than min_completeness% populated
-    4. For duplicate (cik, period) combinations, retains only the most recent record (max data_qtr)
+    2. Filters out CIKs that don't map to ticker symbols (for stock price data availability)
+    3. Reads the feature_completeness_ranking.csv file
+    4. Keeps only columns that are more than min_completeness% populated
+    5. For duplicate (cik, period) combinations, retains only the most recent record (max data_qtr)
     
     Args:
         processed_data_dir (str): Directory containing the processed data files
@@ -651,14 +653,33 @@ def simply_featurized_data(processed_data_dir=SAVE_DIR, min_completeness=DEFAULT
     df_featurized = pd.read_csv(featurized_file, low_memory=False)
     print(f"📊 Input data shape: {df_featurized.shape}")
     
-    # Step 2: Read the feature_completeness_ranking.csv file
+    # Step 2: Filter out CIKs that don't map to tickers
+    print("🔍 Filtering CIKs that don't map to ticker symbols...")
+    cik_to_ticker = get_cik_to_ticker_mapping()
+    
+    if cik_to_ticker:
+        # Convert CIK to string with zero padding for comparison
+        df_featurized['cik_str'] = df_featurized['cik'].astype(str).str.zfill(10)
+        
+        # Filter to keep only CIKs that have ticker mappings
+        df_featurized = df_featurized[df_featurized['cik_str'].isin(cik_to_ticker.keys())]
+        
+        # Drop the temporary cik_str column
+        df_featurized = df_featurized.drop('cik_str', axis=1)
+        
+        print(f"📊 After CIK filtering: {df_featurized.shape}")
+        print(f"✅ Kept only CIKs with ticker symbols for stock price data availability")
+    else:
+        print("⚠️  Warning: Could not load CIK->ticker mapping. Keeping all CIKs.")
+    
+    # Step 3: Read the feature_completeness_ranking.csv file
     ranking_file = os.path.join(processed_data_dir, FEATURE_COMPLETENESS_RANKING_FILE)
     if not os.path.exists(ranking_file):
         raise FileNotFoundError(f"Feature completeness ranking file not found: {ranking_file}")
     
     df_ranking = pd.read_csv(ranking_file)
     
-    # Step 3: Keep only columns that are more than min_completeness% populated
+    # Step 4: Keep only columns that are more than min_completeness% populated
     well_populated_features = df_ranking[df_ranking['non_null_percentage'] > min_completeness]['feature'].tolist()
     
     # Identify columns to keep (cik, period, data_qtr + well-populated features)
@@ -670,7 +691,7 @@ def simply_featurized_data(processed_data_dir=SAVE_DIR, min_completeness=DEFAULT
     # Filter the dataframe to keep only selected columns
     df_simplified = df_featurized[columns_to_keep].copy()
     
-    # Step 4: Handle duplicate (cik, period) combinations
+    # Step 5: Handle duplicate (cik, period) combinations
     # Check for duplicates before processing
     duplicate_check = df_simplified.groupby(['cik', 'period']).size()
     duplicates = duplicate_check[duplicate_check > 1]
@@ -682,6 +703,11 @@ def simply_featurized_data(processed_data_dir=SAVE_DIR, min_completeness=DEFAULT
         df_simplified = df_simplified.drop_duplicates(subset=['cik', 'period'], keep='first')
     
     print(f"📊 Output data shape: {df_simplified.shape}")
+    
+    # Step 6: Write the simplified dataframe to CSV file
+    simplified_file = os.path.join(processed_data_dir, FEATURIZED_SIMPLIFIED_FILE)
+    df_simplified.to_csv(simplified_file, index=False)
+    print(f"💾 Simplified data saved to: {simplified_file}")
     
     return df_simplified
 
@@ -709,6 +735,18 @@ if __name__ == "__main__":
         print(f"  - {qtr_dir}")
     
     if quarter_directories:
-        # Process all quarters using featurize_multi_qtrs
-        print(f"\nProcessing all quarters with featurize_multi_qtrs...")
-        featurize_multi_qtrs(quarter_directories, df_tags_to_featurize, N_quarters=DEFAULT_N_QUARTERS)
+        # Check if combined featurized file already exists
+        combined_file = os.path.join(SAVE_DIR, FEATURIZED_ALL_QUARTERS_FILE)
+        
+        if os.path.exists(combined_file):
+            print(f"✅ Combined featurized file already exists: {combined_file}")
+            print("Skipping featurize_multi_qtrs() to avoid reprocessing...")
+        else:
+            # Process all quarters using featurize_multi_qtrs
+            print(f"\nProcessing all quarters with featurize_multi_qtrs...")
+            featurize_multi_qtrs(quarter_directories, df_tags_to_featurize, N_quarters=DEFAULT_N_QUARTERS)
+        
+        # Simplify the featurized data and save to CSV
+        print(f"\nSimplifying featurized data...")
+        df_simplified = simplify_featurized_data(processed_data_dir=SAVE_DIR, min_completeness=DEFAULT_MIN_COMPLETENESS)
+        print(f"✅ Featurization pipeline completed successfully!")

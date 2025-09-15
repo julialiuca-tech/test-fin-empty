@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import requests
 
 DATA_DIR = 'data/'
 
@@ -205,3 +206,39 @@ def print_featurization(df_featurized, cik, period, tag, qtrs):
         print(f"All features for {tag_qtrs_pattern} are null/NaN")
     
     print(f"{'='*60}")
+
+
+def get_cik_to_ticker_mapping():
+    """
+    Get CIK to ticker symbol mapping from SEC's company tickers JSON file.
+    
+    Returns:
+        dict: Mapping of CIK (str) to ticker symbol (str)
+    """
+    try:
+        # SEC's official company tickers JSON file
+        url = "https://www.sec.gov/files/company_tickers.json"
+        headers = {
+            'User-Agent': 'SEC Data Analysis (your-email@domain.com)',  # SEC requires user agent
+            'Accept-Encoding': 'gzip, deflate',
+            'Host': 'www.sec.gov'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        # Convert to CIK -> ticker mapping
+        cik_to_ticker = {}
+        for entry in data.values():
+            cik = str(entry['cik_str']).zfill(10)  # Pad CIK to 10 digits
+            ticker = entry['ticker']
+            cik_to_ticker[cik] = ticker
+            
+        print(f"✅ Loaded {len(cik_to_ticker)} CIK->ticker mappings from SEC")
+        return cik_to_ticker
+        
+    except Exception as e:
+        print(f"❌ Error loading CIK->ticker mapping: {e}")
+        return {}
