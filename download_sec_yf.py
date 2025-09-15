@@ -10,6 +10,8 @@ Key Functions:
 - collect_cik_ticker_pairs(): Maps CIKs to ticker symbols from featurized data
 - download_stock_data(): Downloads stock data in batches with rate limiting
 - download_missed_tickers(): Downloads only tickers that were missed in previous runs
+- month_end_price(): Extracts month-end closing prices for all (cik, ticker) tuples
+- price_trend(): Generates up-or-down trend labels with look-ahead horizon
 - closing_price_single_ticker(): Fetches closing prices for individual tickers
 - closing_price_batch(): Processes a batch of tickers and saves results
 
@@ -249,7 +251,38 @@ def download_stock_data(ticker_list_ordered, start_date, end_date):
                 print(f"   ... and {len(failed_tickers) - 10} more")
 
 
-def download_missed_tickers():
+def download_main():
+    """
+    Main function to orchestrate the stock data download process.
+    
+    This function coordinates the entire workflow:
+    1. Collects CIK-ticker pairs from featurized data
+    2. Downloads stock data in batches with rate limiting
+    3. Saves results to individual batch files
+    
+    Returns:
+        None: Results are saved to CSV files in the STOCK_DIR directory
+    """
+    print("🚀 Starting SEC Stock Data Download Process")
+    print("=" * 50)
+    
+    # Step 1: Collect CIK-ticker pairs
+    print("\n📊 Step 1: Collecting CIK-ticker pairs...")
+    ticker_list_ordered = collect_cik_ticker_pairs(processed_data_dir, featurized_file)
+    
+    if not ticker_list_ordered:
+        print("❌ No ticker pairs found. Exiting.")
+        return
+    
+    # Step 2: Download stock data in batches
+    print(f"\n📈 Step 2: Downloading stock data for {len(ticker_list_ordered)} companies...")
+    download_stock_data(ticker_list_ordered, start_date, end_date)
+    
+    print("\n✅ Stock data download process completed!")
+    print(f"📁 Results saved to: {STOCK_DIR}")
+
+
+def download_missed_tickers(batch_num=NUM_BATCHES):
     """
     Download stock data for tickers that were missed in previous runs.
     
@@ -263,7 +296,7 @@ def download_missed_tickers():
     4. Download missing tickers using closing_price_batch()
     
     Returns:
-        None: Missing ticker data is saved to batch_{NUM_BATCHES}.csv
+        None: Missing ticker data is saved to batch_{batch_num}.csv
     """
     print("🔍 Checking for missed tickers...")
     print("=" * 50)
@@ -316,11 +349,11 @@ def download_missed_tickers():
     
     # Step 4: Download missing tickers
     print(f"\n📈 Step 4: Downloading {len(missing_tickers_list)} missing tickers...")
-    print(f"🔄 Using batch number {NUM_BATCHES} for missing tickers")
+    print(f"🔄 Using batch number {batch_num} for missing tickers")
     
     try:
         batch_data, failed_tickers, successful_count, failed_count = closing_price_batch(
-            NUM_BATCHES, missing_tickers_list, start_date, end_date
+            batch_num, missing_tickers_list, start_date, end_date
         )
         
         print(f"\n✅ Missing tickers download completed!")
@@ -335,53 +368,255 @@ def download_missed_tickers():
         print(f"❌ Error downloading missing tickers: {e}")
 
 
-def main():
+
+def month_end_price():
     """
-    Main function to orchestrate the stock data download process.
+    Extract month-end closing prices for all (cik, ticker) tuples from stock data files.
     
-    This function coordinates the entire workflow:
-    1. Collects CIK-ticker pairs from featurized data
-    2. Downloads stock data in batches with rate limiting
-    3. Saves results to individual batch files
+    This function reads all batch CSV files in the stock_data directory and extracts
+    the closing price for the last trading day of each month for each company.
     
     Returns:
-        None: Results are saved to CSV files in the STOCK_DIR directory
+        pd.DataFrame: DataFrame with columns (cik, ticker, month_end_date, close_price, year_month)
     """
-    print("🚀 Starting SEC Stock Data Download Process")
+    print("📊 Extracting month-end prices...")
     print("=" * 50)
     
-    # Step 1: Collect CIK-ticker pairs
-    print("\n📊 Step 1: Collecting CIK-ticker pairs...")
-    ticker_list_ordered = collect_cik_ticker_pairs(processed_data_dir, featurized_file)
+    # Step 1: Read all batch CSV files
+    print("\n📊 Step 1: Reading all batch CSV files...")
+    all_data = []
     
-    if not ticker_list_ordered:
-        print("❌ No ticker pairs found. Exiting.")
-        return
+    if not os.path.exists(STOCK_DIR):
+        print(f"❌ Stock data directory not found: {STOCK_DIR}")
+        return pd.DataFrame()
     
-    # Step 2: Download stock data in batches
-    print(f"\n📈 Step 2: Downloading stock data for {len(ticker_list_ordered)} companies...")
-    download_stock_data(ticker_list_ordered, start_date, end_date)
+    # Get all batch CSV files
+    csv_files = [f for f in os.listdir(STOCK_DIR) if f.startswith('batch_') and f.endswith('.csv')]
+    print(f"📁 Found {len(csv_files)} batch files")
     
-    print("\n✅ Stock data download process completed!")
-    print(f"📁 Results saved to: {STOCK_DIR}")
+    for filename in csv_files:
+        file_path = os.path.join(STOCK_DIR, filename)
+        try:
+            df = pd.read_csv(file_path, low_memory=False)
+            if 'cik' in df.columns and 'ticker' in df.columns and 'Date' in df.columns and 'Close' in df.columns:
+                # Convert Date column to datetime with UTC timezone handling
+                df['Date'] = pd.to_datetime(df['Date'], utc=True)
+                all_data.append(df)
+                print(f"  📄 {filename}: {len(df)} records")
+        except Exception as e:
+            print(f"  ⚠️ Error reading {filename}: {e}")
+    
+    if not all_data:
+        print("❌ No valid data found in batch files")
+        return pd.DataFrame()
+    
+    # Combine all data
+    combined_df = pd.concat(all_data, ignore_index=True)
+    print(f"📊 Total records: {len(combined_df)}")
+    
+    
+    # Step 2: Extract month-end dates for each (cik, ticker) pair
+    print("\n📊 Step 2: Extracting month-end dates...")
+    combined_df['year_month'] = combined_df['Date'].dt.to_period('M')
+    
+    # Group by (cik, ticker, year_month) and find the record with the largest Date in each group
+    # This gives us the last trading day of each month for each company
+    month_end_df = combined_df.loc[combined_df.groupby(['cik', 'ticker', 'year_month'])['Date'].idxmax()].copy()
+    
+    # Rename columns for clarity
+    month_end_df = month_end_df.rename(columns={'Date': 'month_end_date', 'Close': 'close_price'})
+    
+    # Select only the columns we need
+    month_end_df = month_end_df[['cik', 'ticker', 'month_end_date', 'close_price', 'year_month']].reset_index(drop=True)
+    
+    print(f"📊 Month-end records: {len(month_end_df)}")
+    
+    print(f"\n✅ Month-end price extraction completed!")
+    return month_end_df
 
 
-def run_missed_tickers():
+def remove_cik_w_missing_month(month_end_df):
     """
-    Convenience function to run only the missed tickers download.
+    Remove (cik, ticker) tuples that have inconsecutive year_month records.
     
-    This is useful when you want to download only the tickers that were
-    missed in previous runs, without re-downloading all data.
+    This function identifies (cik, ticker) pairs with missing months in their data
+    and removes all records for those pairs from the DataFrame. 
+    Missing months may happen if a company gets delisted or goes onto the
+    OTC (over the counter) market. 
+    
+    Args:
+        month_end_df (pd.DataFrame): DataFrame with columns 
+        ['cik', 'ticker', 'month_end_date', 'close_price', 'year_month']
+        
+    Returns:
+        pd.DataFrame: Filtered DataFrame with only (cik, ticker) pairs that 
+        have consecutive months
+    """
+    if month_end_df.empty:
+        print("❌ No data provided for processing")
+        return month_end_df
+    
+    # Check required columns
+    required_cols = ['cik', 'ticker', 'year_month']
+    if not all(col in month_end_df.columns for col in required_cols):
+        print(f"❌ Missing required columns. Need: {required_cols}")
+        return month_end_df
+    
+    violations = []
+    
+    # Group by (cik, ticker) and check each pair
+    for (cik, ticker), group in month_end_df.groupby(['cik', 'ticker']):
+        # Sort by year_month
+        group = group.sort_values('year_month')
+        months = group['year_month'].tolist()
+        
+        # Check if months are consecutive
+        is_consecutive = True
+        missing_months = []
+        
+        if len(months) > 1:
+            # Convert periods to integers for easier comparison
+            month_ints = [int(str(month).replace('-', '')) for month in months]
+            
+            for i in range(len(month_ints) - 1):
+                current_month = month_ints[i]
+                next_month = month_ints[i + 1]
+                
+                # Calculate expected next month
+                if current_month % 100 == 12:  # December
+                    expected_next = (current_month // 100 + 1) * 100 + 1  # Next year, January
+                else:
+                    expected_next = current_month + 1
+                
+                if next_month != expected_next:
+                    is_consecutive = False
+                    # Find missing months between current and next
+                    missing_start = current_month
+                    missing_end = next_month
+                    
+                    # Generate missing months
+                    temp_month = missing_start
+                    while temp_month < missing_end:
+                        if temp_month % 100 == 12:
+                            temp_month = (temp_month // 100 + 1) * 100 + 1
+                        else:
+                            temp_month += 1
+                        if temp_month < missing_end:
+                            missing_months.append(f"{temp_month//100:04d}-{temp_month%100:02d}")
+        
+        if not is_consecutive:
+            violations.append((cik, ticker, missing_months))
+    
+    # Remove records for (cik, ticker) pairs with missing months
+    if violations:
+        print(f"Removing {len(violations)} (cik, ticker) pairs with missing months:")
+        for cik, ticker, missing_months in violations:
+            print(f"  CIK: {cik}, Ticker: {ticker}")
+            if missing_months:
+                print(f"    Missing months: {missing_months}")
+        
+        # Create mask to keep only records not in violations
+        violation_pairs = [(cik, ticker) for cik, ticker, _ in violations]
+        mask = ~month_end_df.apply(lambda row: (row['cik'], row['ticker']) in violation_pairs, axis=1)
+        filtered_df = month_end_df[mask].copy()
+        
+        print(f"Removed {len(month_end_df) - len(filtered_df)} records")
+        return filtered_df
+    else:
+        print("No (cik, ticker) pairs with missing months found")
+        return month_end_df
+
+
+def price_trend(month_end_df, trend_horizon_in_months):
+    """
+    Generate up-or-down trend labels for month-end prices with look-ahead horizon.
+    
+    This function takes month-end price data and calculates trend labels by looking
+    ahead for a specified number of months to determine if prices go up or down.
+    
+    Args:
+        month_end_df (pd.DataFrame): DataFrame with columns (cik, ticker, month_end_date, close_price, year_month)
+        trend_horizon_in_months (int): Number of months to look ahead for trend calculation
+        
+    Returns:
+        pd.DataFrame: DataFrame with columns (cik, ticker, month_end_date, trend_up_or_down)
+                     where trend_up_or_down is 1 for price going up, 0 for price going down
+    """
+    print("📈 Computing price trends...")
+    print("=" * 50)
+    print(f"🔍 Trend horizon: {trend_horizon_in_months} months")
+    
+    if month_end_df.empty:
+        print("❌ No month-end data provided")
+        return pd.DataFrame()
+    
+    # Calculate trends using DataFrame join approach
+    print(f"\n📊 Calculating trends with {trend_horizon_in_months} month horizon...")
+    
+    # Add year_month_horizon column and create future price lookup
+    month_end_df = month_end_df.copy()
+    month_end_df['year_month_horizon'] = month_end_df['year_month'] + trend_horizon_in_months
+    
+    # Create future price lookup table
+    future_df = month_end_df[['cik', 'ticker', 'year_month', 'close_price']].rename(columns={
+        'year_month': 'year_month_horizon',
+        'close_price': 'future_close_price'
+    })
+    
+    # Join to get future prices and calculate trends
+    trend_df = (month_end_df.merge(future_df, on=['cik', 'ticker', 'year_month_horizon'], how='left')
+                .dropna(subset=['future_close_price'])
+                .assign(trend_up_or_down=lambda x: (x['future_close_price'] > x['close_price']).astype(int))
+                [['cik', 'ticker', 'month_end_date', 'trend_up_or_down']])
+    print(f"📊 Trend records: {len(trend_df)}")
+    
+    # Summary statistics
+    if len(trend_df) > 0:
+        up_trends = trend_df['trend_up_or_down'].sum()
+        print(f"\n📈 Trend Summary:")
+        print(f"  📈 Up trends: {up_trends} ({up_trends/len(trend_df)*100:.1f}%)")
+        print(f"  📉 Down trends: {len(trend_df) - up_trends} ({(len(trend_df) - up_trends)/len(trend_df)*100:.1f}%)")
+        print(f"  📊 Total trends: {len(trend_df)}")
+    
+    print(f"\n✅ Price trend calculation completed!")
+    return trend_df
+
+
+
+def test_price_trend():
+    """
+    Test function to run price trend analysis with a 3-month horizon.
+    
+    This function demonstrates how to use the month_end_price() and price_trend() functions
+    with a 3-month look-ahead horizon.
     
     Returns:
-        None: Missing ticker data is saved to batch_{NUM_BATCHES}.csv
+        pd.DataFrame: Price trend results
     """
-    download_missed_tickers()
+    print("🧪 Testing price trend analysis...")
+    
+    # Step 1: Extract month-end prices
+    month_end_df = month_end_price()
+    # Step 2: Remove (cik, ticker) pairs with missing months
+    month_end_df = remove_cik_w_missing_month(month_end_df)
+    
+    # Step 3: Calculate trends
+    for horizon in [3, 1]:
+        trend_df = price_trend(month_end_df, trend_horizon_in_months=horizon)
+        if len(trend_df) > 0: 
+            # Save results to CSV
+            output_file = os.path.join(STOCK_DIR, f'price_trends_{horizon}month.csv')
+            trend_df.to_csv(output_file, index=False)
+            print(f"\n💾 {horizon}-month trends saved to: {output_file}")
+
 
 
 if __name__ == "__main__":
     # Uncomment the line below to run the full download process
-    # main()
+    # download_main()
     
     # Uncomment the line below to run only the missed tickers download
-    run_missed_tickers()
+    # download_missed_tickers()
+    
+    # Uncomment the line below to test price trend analysis
+    test_price_trend()
