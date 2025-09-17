@@ -539,8 +539,9 @@ def price_trend(month_end_df, trend_horizon_in_months):
         trend_horizon_in_months (int): Number of months to look ahead for trend calculation
         
     Returns:
-        pd.DataFrame: DataFrame with columns (cik, ticker, month_end_date, trend_up_or_down)
+        pd.DataFrame: DataFrame with columns (cik, ticker, month_end_date, trend_up_or_down, trend_5per_up)
                      where trend_up_or_down is 1 for price going up, 0 for price going down
+                     and trend_5per_up is 1 for price going up more than 5%, 0 otherwise
     """
     print("📈 Computing price trends...")
     print("=" * 50)
@@ -566,16 +567,21 @@ def price_trend(month_end_df, trend_horizon_in_months):
     # Join to get future prices and calculate trends
     trend_df = (month_end_df.merge(future_df, on=['cik', 'ticker', 'year_month_horizon'], how='left')
                 .dropna(subset=['future_close_price'])
-                .assign(trend_up_or_down=lambda x: (x['future_close_price'] > x['close_price']).astype(int))
-                [['cik', 'ticker', 'month_end_date', 'trend_up_or_down']])
+                .assign(
+                    trend_up_or_down=lambda x: (x['future_close_price'] > x['close_price']).astype(int),
+                    trend_5per_up=lambda x: (x['future_close_price'] > x['close_price'] * 1.05).astype(int)
+                )
+                [['cik', 'ticker', 'month_end_date', 'trend_up_or_down', 'trend_5per_up']])
     print(f"📊 Trend records: {len(trend_df)}")
     
     # Summary statistics
     if len(trend_df) > 0:
         up_trends = trend_df['trend_up_or_down'].sum()
+        up_5per_trends = trend_df['trend_5per_up'].sum()
         print(f"\n📈 Trend Summary:")
         print(f"  📈 Up trends: {up_trends} ({up_trends/len(trend_df)*100:.1f}%)")
         print(f"  📉 Down trends: {len(trend_df) - up_trends} ({(len(trend_df) - up_trends)/len(trend_df)*100:.1f}%)")
+        print(f"  🚀 5%+ up trends: {up_5per_trends} ({up_5per_trends/len(trend_df)*100:.1f}%)")
         print(f"  📊 Total trends: {len(trend_df)}")
     
     print(f"\n✅ Price trend calculation completed!")
