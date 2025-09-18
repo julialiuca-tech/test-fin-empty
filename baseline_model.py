@@ -20,7 +20,10 @@ import pandas as pd
 
 # Import utility functions
 from utility_binary_classifier import split_train_val_by_column, baseline_binary_classifier
-
+from utility_data import load_company_tickers_exchange_mappings
+import xgboost as xgb
+import os
+ 
 COMPLETENESS_THRESHOLD = 0.2
 
 featurized_data_file = 'data/featurized_2022/featurized_simplified.csv'
@@ -30,7 +33,7 @@ stock_trend_data_file = f'data/stock_202001_to_202507/price_trends_{trend_horizo
 Y_LABEL = 'trend_5per_up' # can be 'trend_up_or_down' or 'trend_5per_up'
 
 SPLIT_STRATEGY = {'cik': 'random'} # can be 'cik', 'date', or 'random'
-
+   
 
 def prepare_data_for_model(split_strategy=SPLIT_STRATEGY):
     """
@@ -88,7 +91,7 @@ def prepare_data_for_model(split_strategy=SPLIT_STRATEGY):
     y_train = y[train_mask]
     y_val = y[val_mask]
     
-    return X_train, X_val, y_train, y_val, feature_cols
+    return X_train, X_val, y_train, y_val, feature_cols 
 
 
 def select_feature_cols(df, strategy='all'):
@@ -236,9 +239,121 @@ def build_baseline_model(X_train, X_val, y_train, y_val, feature_cols):
     return results
 
 
+def evaluate_invest():
+    # Prepare data (you can change split_strategy to 'date' for time-based splitting) 
+    # Load simplified featurized data 
+    df_features = pd.read_csv(featurized_data_file)
+    print(f"Features loaded: {df_features.shape}")
+    
+    # Load ground truth -- stock price trends
+    df_trends = pd.read_csv(stock_trend_data_file)
+    print(f"Trends loaded: {df_trends.shape}")
+
+    # Join features and trends on cik and year_month resolution
+    # Convert period and month_end_date to year_month for proper joining
+    # Period is in YYYYMMDD format, so parse it correctly
+    df_features['year_month'] = pd.to_datetime(df_features['period'], format='%Y%m%d').dt.to_period('M')
+    # Handle timezone-aware dates by converting to naive datetime first
+    df_trends['year_month'] = pd.to_datetime(df_trends['month_end_date']).dt.tz_localize(None).dt.to_period('M')
+    # Inner join on cik and year_month
+    df = df_features.merge(df_trends, on=['cik', 'year_month'], how='inner')
+    print(f"Joined data: {df.shape}")
+
+    # Define split strategy for this analysis
+    split_strategy = {'cik': 'random'}  # Use random splitting by CIK
+    
+    # Use the split_strategy parameter - expect a dictionary with one key
+    try:    
+        by_column = list(split_strategy.keys())[0]
+        split_for_training = split_strategy[by_column]
+        print(f"Splitting data by {by_column} using {split_for_training} strategy")
+        train_mask, val_mask = split_train_val_by_column(df, 0.7, by_column, split_for_training)
+    except Exception as e:
+        print(f"❌ Error with split_strategy: {str(e)}")
+        print("🔄 Falling back to random splitting...")
+        train_mask, val_mask = split_train_val_by_column(df, 0.7, None, 'random')
+
+    # Prepare features and target
+    feature_cols = [f for f in df.columns if '_current' in f or '_change' in f]
+    X = df[feature_cols].copy()
+    y = df[Y_LABEL].copy()
+    
+    # Apply masks to get training and validation sets
+    X_train = X[train_mask]
+    X_val = X[val_mask]
+    y_train = y[train_mask]
+    y_val = y[val_mask]
+    df_val = df[val_mask][['cik', 'ticker', 'period', 'year_month', 'price_return']]
+    invest_val = df[val_mask]['price_return']
+
+    print('average return: ', invest_val.mean())
+    print('median return: ', invest_val.median())
+
+    model = xgb.XGBClassifier(
+            n_estimators=100, max_depth=6, learning_rate=0.1,
+            random_state=42, n_jobs=-1, eval_metric='logloss'
+        )
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_val)
+    y_pred_proba = model.predict_proba(X_val)[:, 1]
+
+    df_val['y_pred_proba']= y_pred_proba
+    df_val.sort_values(by= 'y_pred_proba', ascending=False, inplace=True)
+
+    # Calculate cumulative average of invest_val as we slide down the sorted dataframe
+    df_val['cumulative_avg_return'] = df_val['price_return'].expanding().mean()
+    df_val['cumulative_count'] = range(1, len(df_val) + 1)
+
+    # Load company name mappings
+    ticker_mapping, exchange_mapping = load_company_tickers_exchange_mappings()
+    
+    # Add company names to df_val for better reporting
+    df_val['company_name'] = df_val['ticker'].map(ticker_mapping)
+    df_val['company_name'] = df_val['company_name'].fillna(df_val['ticker'])
+    
+    # Find optimal number of investments (highest cumulative average)
+    optimal_idx = df_val['cumulative_avg_return'].idxmax()
+    optimal_count = df_val.loc[optimal_idx, 'cumulative_count']
+    optimal_return = df_val.loc[optimal_idx, 'cumulative_avg_return']
+    optimal_ticker = df_val.loc[optimal_idx, 'ticker']
+    optimal_company = df_val.loc[optimal_idx, 'company_name']
+    
+    # Get top 10 investments info
+    top_10_return = df_val.iloc[9]['cumulative_avg_return'] if len(df_val) >= 10 else df_val['cumulative_avg_return'].iloc[-1]
+    top_10_tickers = df_val.iloc[:10]['ticker'].tolist()
+    top_10_companies = df_val.iloc[:10]['company_name'].tolist()
+    
+    # Consolidated summary statistics
+    print(f"\n📊 Investment Analysis Summary:")
+    print(f"  📈 Total investments: {len(df_val)}")
+    print(f"  📊 Final cumulative average return: {df_val['cumulative_avg_return'].iloc[-1]:.4f}")
+    print(f"  🎯 Best cumulative average return: {optimal_return:.4f} (achieved at {optimal_count} companies)")
+    # Get all companies up to the optimal count
+    optimal_companies = df_val.iloc[:optimal_count]
+    optimal_tickers = optimal_companies['ticker'].tolist()
+    optimal_company_names = optimal_companies['company_name'].tolist()
+    print(f"     Optimal companies: {', '.join([f'{t}({c})' for t, c in zip(optimal_tickers, optimal_company_names)])}")
+    print(f"  📊 Top 10 companies cumulative return: {top_10_return:.4f}")
+    print(f"     Top 10 companies: {', '.join([f'{t}({c})' for t, c in zip(top_10_tickers, top_10_companies)])}")
 
 
+    # Plot the cumulative average curve
+    import matplotlib.pyplot as plt
+    
+    plt.figure(figsize=(12, 8))
+    plt.plot(df_val['cumulative_count'], df_val['cumulative_avg_return'], 
+             linewidth=2, color='blue', label='Cumulative Average Return')
+    plt.axhline(y=1.0, color='red', linestyle='--', alpha=0.7, label='Break-even (1.0)')
+    plt.xlabel('Number of Investments (Sorted by Prediction Probability)')
+    plt.ylabel('Cumulative Average Return')
+    plt.title('Investment Performance: Cumulative Average Return vs Number of Investments')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
 
+    
+    return df_val 
 
 def main():
     """
@@ -262,4 +377,5 @@ def main():
 
 
 if __name__ == "__main__":
-    results = main()
+    # results = main()
+    evaluate_invest()

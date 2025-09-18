@@ -35,9 +35,9 @@ from featurize import FEATURIZED_SIMPLIFIED_FILE
 NUM_BATCHES = 10
 MAX_RETRIES = 3
 SLEEP_TIME = 20 
-STOCK_DIR = '/Users/juanliu/Workspace/git_test/SEC_data_explore/stock_data/'
+STOCK_DIR = '/Users/juanliu/Workspace/git_test/SEC_data_explore/data/stock_202001_to_202507/'
 
-processed_data_dir='/Users/juanliu/Workspace/git_test/SEC_data_explore/processed_data/'
+processed_data_dir='/Users/juanliu/Workspace/git_test/SEC_data_explore/featurized_2022/'
 featurized_file='featurized_simplified.csv' 
 
 start_date = '2020-01-01' 
@@ -539,9 +539,10 @@ def price_trend(month_end_df, trend_horizon_in_months):
         trend_horizon_in_months (int): Number of months to look ahead for trend calculation
         
     Returns:
-        pd.DataFrame: DataFrame with columns (cik, ticker, month_end_date, trend_up_or_down, trend_5per_up)
-                     where trend_up_or_down is 1 for price going up, 0 for price going down
-                     and trend_5per_up is 1 for price going up more than 5%, 0 otherwise
+        pd.DataFrame: DataFrame with columns (cik, ticker, month_end_date, trend_up_or_down, trend_5per_up, price_change)
+                     where trend_up_or_down is 1 for price going up, 0 for price going down,
+                     trend_5per_up is 1 for price going up more than 5%, 0 otherwise,
+                     and price_change is the ratio of future_close_price to close_price
     """
     print("📈 Computing price trends...")
     print("=" * 50)
@@ -569,9 +570,10 @@ def price_trend(month_end_df, trend_horizon_in_months):
                 .dropna(subset=['future_close_price'])
                 .assign(
                     trend_up_or_down=lambda x: (x['future_close_price'] > x['close_price']).astype(int),
-                    trend_5per_up=lambda x: (x['future_close_price'] > x['close_price'] * 1.05).astype(int)
+                    trend_5per_up=lambda x: (x['future_close_price'] > x['close_price'] * 1.05).astype(int),
+                    price_return =lambda x: x['future_close_price'] / x['close_price']
                 )
-                [['cik', 'ticker', 'month_end_date', 'trend_up_or_down', 'trend_5per_up']])
+                [['cik', 'ticker', 'month_end_date', 'trend_up_or_down', 'trend_5per_up', 'price_return']])
     print(f"📊 Trend records: {len(trend_df)}")
     
     # Summary statistics
@@ -583,6 +585,17 @@ def price_trend(month_end_df, trend_horizon_in_months):
         print(f"  📉 Down trends: {len(trend_df) - up_trends} ({(len(trend_df) - up_trends)/len(trend_df)*100:.1f}%)")
         print(f"  🚀 5%+ up trends: {up_5per_trends} ({up_5per_trends/len(trend_df)*100:.1f}%)")
         print(f"  📊 Total trends: {len(trend_df)}")
+        
+        # Price change statistics
+        avg_price_change = trend_df['price_return'].mean()
+        median_price_change = trend_df['price_return'].median()
+        min_price_change = trend_df['price_return'].min()
+        max_price_change = trend_df['price_return'].max()
+        print(f"\n💰 Price Change Statistics:")
+        print(f"  📊 Average price change: {avg_price_change:.3f} ({((avg_price_change-1)*100):+.1f}%)")
+        print(f"  📊 Median price change: {median_price_change:.3f} ({((median_price_change-1)*100):+.1f}%)")
+        print(f"  📉 Min price change: {min_price_change:.3f} ({((min_price_change-1)*100):+.1f}%)")
+        print(f"  📈 Max price change: {max_price_change:.3f} ({((max_price_change-1)*100):+.1f}%)")
     
     print(f"\n✅ Price trend calculation completed!")
     return trend_df

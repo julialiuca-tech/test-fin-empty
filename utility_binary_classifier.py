@@ -21,7 +21,7 @@ import xgboost as xgb
  
 
 
-def _random_split(df, train_prop, prefix=""):
+def _random_split(df, train_prop, prefix="", random_seed=None):
     """
     Helper function to perform random splitting.
     
@@ -29,6 +29,7 @@ def _random_split(df, train_prop, prefix=""):
         df (pd.DataFrame): Full dataset
         train_prop (float): Proportion of data to use for training
         prefix (str): Prefix for print statements (e.g., "Fallback - ")
+        random_seed (int, optional): Random seed for reproducibility. If None, uses truly random results.
         
     Returns:
         tuple: (train_mask, val_mask) - Boolean masks for training and validation sets
@@ -40,7 +41,8 @@ def _random_split(df, train_prop, prefix=""):
     train_size = int(total_samples * train_prop)
     
     # Create random indices for training
-    np.random.seed(42)  # For reproducibility
+    if random_seed is not None:
+        np.random.seed(random_seed)  # For reproducibility
     train_indices = np.random.choice(total_samples, size=train_size, replace=False)
     
     # Create boolean masks
@@ -54,7 +56,7 @@ def _random_split(df, train_prop, prefix=""):
     return train_mask, val_mask
 
 
-def split_train_val_by_column(df, train_prop, by_column, split_for_training='random'):
+def split_train_val_by_column(df, train_prop, by_column, split_for_training='random', random_seed=None):
     """
     Split data into training and validation sets based on specified column.
     
@@ -63,6 +65,7 @@ def split_train_val_by_column(df, train_prop, by_column, split_for_training='ran
         train_prop (float): Proportion of data to use for training (0.0 to 1.0)
         by_column (str): Column to split data by (None for random split)
         split_for_training (str): Strategy ('random', 'top', or 'bottom')
+        random_seed (int, optional): Random seed for reproducibility. If None, uses truly random results.
         
     Returns:
         tuple: (train_mask, val_mask) - Boolean masks for training and validation sets
@@ -76,7 +79,7 @@ def split_train_val_by_column(df, train_prop, by_column, split_for_training='ran
         raise ValueError(f"train_prop must be between 0.0 and 1.0, got {train_prop}")
     
     if by_column is None: 
-        return _random_split(df, train_prop)
+        return _random_split(df, train_prop, random_seed=random_seed)
     
     # Validate that by_column exists in the dataframe
     try:
@@ -97,7 +100,8 @@ def split_train_val_by_column(df, train_prop, by_column, split_for_training='ran
         
         # Prepare values based on split strategy
         if split_for_training == 'random':
-            np.random.seed(42)  # For reproducibility
+            if random_seed is not None:
+                np.random.seed(random_seed)  # For reproducibility
             shuffled_values = value_counts.index.values.copy()
             np.random.shuffle(shuffled_values)
         elif split_for_training == 'top':
@@ -131,7 +135,7 @@ def split_train_val_by_column(df, train_prop, by_column, split_for_training='ran
     except Exception as e:
         print(f"❌ Error during column-based splitting: {str(e)}")
         print("🔄 Falling back to random splitting...")
-        return _random_split(df, train_prop, prefix="Fallback - ")
+        return _random_split(df, train_prop, prefix="Fallback - ", random_seed=random_seed)
 
 
 def baseline_binary_classifier(X_train, X_val, y_train, y_val, model_name): 

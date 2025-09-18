@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 import requests
+import os
+import json
 
 DATA_DIR = 'data/'
 
@@ -242,3 +244,32 @@ def get_cik_to_ticker_mapping():
     except Exception as e:
         print(f"❌ Error loading CIK->ticker mapping: {e}")
         return {}
+
+
+
+def load_company_tickers_exchange_mappings():
+    """
+    Load SEC ticker and exchange mappings, downloaded from 
+    https://www.sec.gov/files/company_tickers_exchange.json
+    
+    Returns:
+        tuple: (ticker_mapping, exchange_mapping) dictionaries
+    Usage:
+        ticker_mapping, exchange_mapping = load_company_tickers_exchange_mappings() 
+    """
+    sec_file = 'data/company_tickers_exchange.json'
+    
+    if not os.path.exists(sec_file):
+        print(f"❌ SEC file not found: {sec_file}")
+        return {}, {}
+    
+    with open(sec_file, 'r') as f:
+        data = json.load(f)
+    
+    # Create mappings
+    records = data['data']
+    ticker_mapping = {record[2]: record[1] for record in records}  # ticker -> name
+    exchange_mapping = {record[2]: record[3] for record in records}  # ticker -> exchange
+    
+    print(f"✅ Loaded SEC mappings for {len(ticker_mapping)} companies")
+    return ticker_mapping, exchange_mapping
