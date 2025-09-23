@@ -28,14 +28,14 @@ import json
 from datetime import datetime, timedelta
 import sys
 sys.path.append('..')
-from utility_data import get_cik_to_ticker_mapping
+from utility_data import get_cik_ticker_mapping, price_trend, remove_cik_w_missing_month
+from config import STOCK_DIR, FEATURIZED_SIMPLIFIED_FILE
 import yfinance as yf
-from featurize import FEATURIZED_SIMPLIFIED_FILE
 
+# Yahoo Finance API parameters
 NUM_BATCHES = 10
 MAX_RETRIES = 3
-SLEEP_TIME = 20 
-STOCK_DIR = '/Users/juanliu/Workspace/git_test/SEC_data_explore/data/stock_202001_to_202507/'
+SLEEP_TIME = 20  # seconds between API calls
 
 processed_data_dir='/Users/juanliu/Workspace/git_test/SEC_data_explore/featurized_2022/'
 featurized_file='featurized_simplified.csv' 
@@ -174,7 +174,7 @@ def collect_cik_ticker_pairs(processed_data_dir, featurized_file):
     print(f"📊 Found {len(distinct_ciks)} distinct CIK values")
     
     # Step 2: Get CIK to ticker mapping
-    cik_to_ticker = get_cik_to_ticker_mapping()
+    cik_to_ticker, ticker_to_cik = get_cik_ticker_mapping()
     if not cik_to_ticker:
         print("❌ Failed to load CIK to ticker mapping") 
     
@@ -369,6 +369,8 @@ def download_missed_tickers(batch_num=NUM_BATCHES):
 
 
 
+
+
 def month_end_price():
     """
     Extract month-end closing prices for all (cik, ticker) tuples from stock data files.
@@ -426,6 +428,9 @@ def month_end_price():
     # Rename columns for clarity
     month_end_df = month_end_df.rename(columns={'Date': 'month_end_date', 'Close': 'close_price'})
     
+    # Convert month_end_date to date resolution (remove time component)
+    month_end_df['month_end_date'] = month_end_df['month_end_date'].dt.date
+    
     # Select only the columns we need
     month_end_df = month_end_df[['cik', 'ticker', 'month_end_date', 'close_price', 'year_month']].reset_index(drop=True)
     
@@ -435,170 +440,6 @@ def month_end_price():
     return month_end_df
 
 
-def remove_cik_w_missing_month(month_end_df):
-    """
-    Remove (cik, ticker) tuples that have inconsecutive year_month records.
-    
-    This function identifies (cik, ticker) pairs with missing months in their data
-    and removes all records for those pairs from the DataFrame. 
-    Missing months may happen if a company gets delisted or goes onto the
-    OTC (over the counter) market. 
-    
-    Args:
-        month_end_df (pd.DataFrame): DataFrame with columns 
-        ['cik', 'ticker', 'month_end_date', 'close_price', 'year_month']
-        
-    Returns:
-        pd.DataFrame: Filtered DataFrame with only (cik, ticker) pairs that 
-        have consecutive months
-    """
-    if month_end_df.empty:
-        print("❌ No data provided for processing")
-        return month_end_df
-    
-    # Check required columns
-    required_cols = ['cik', 'ticker', 'year_month']
-    if not all(col in month_end_df.columns for col in required_cols):
-        print(f"❌ Missing required columns. Need: {required_cols}")
-        return month_end_df
-    
-    violations = []
-    
-    # Group by (cik, ticker) and check each pair
-    for (cik, ticker), group in month_end_df.groupby(['cik', 'ticker']):
-        # Sort by year_month
-        group = group.sort_values('year_month')
-        months = group['year_month'].tolist()
-        
-        # Check if months are consecutive
-        is_consecutive = True
-        missing_months = []
-        
-        if len(months) > 1:
-            # Convert periods to integers for easier comparison
-            month_ints = [int(str(month).replace('-', '')) for month in months]
-            
-            for i in range(len(month_ints) - 1):
-                current_month = month_ints[i]
-                next_month = month_ints[i + 1]
-                
-                # Calculate expected next month
-                if current_month % 100 == 12:  # December
-                    expected_next = (current_month // 100 + 1) * 100 + 1  # Next year, January
-                else:
-                    expected_next = current_month + 1
-                
-                if next_month != expected_next:
-                    is_consecutive = False
-                    # Find missing months between current and next
-                    missing_start = current_month
-                    missing_end = next_month
-                    
-                    # Generate missing months
-                    temp_month = missing_start
-                    while temp_month < missing_end:
-                        if temp_month % 100 == 12:
-                            temp_month = (temp_month // 100 + 1) * 100 + 1
-                        else:
-                            temp_month += 1
-                        if temp_month < missing_end:
-                            missing_months.append(f"{temp_month//100:04d}-{temp_month%100:02d}")
-        
-        if not is_consecutive:
-            violations.append((cik, ticker, missing_months))
-    
-    # Remove records for (cik, ticker) pairs with missing months
-    if violations:
-        print(f"Removing {len(violations)} (cik, ticker) pairs with missing months:")
-        for cik, ticker, missing_months in violations:
-            print(f"  CIK: {cik}, Ticker: {ticker}")
-            if missing_months:
-                print(f"    Missing months: {missing_months}")
-        
-        # Create mask to keep only records not in violations
-        violation_pairs = [(cik, ticker) for cik, ticker, _ in violations]
-        mask = ~month_end_df.apply(lambda row: (row['cik'], row['ticker']) in violation_pairs, axis=1)
-        filtered_df = month_end_df[mask].copy()
-        
-        print(f"Removed {len(month_end_df) - len(filtered_df)} records")
-        return filtered_df
-    else:
-        print("No (cik, ticker) pairs with missing months found")
-        return month_end_df
-
-
-def price_trend(month_end_df, trend_horizon_in_months):
-    """
-    Generate up-or-down trend labels for month-end prices with look-ahead horizon.
-    
-    This function takes month-end price data and calculates trend labels by looking
-    ahead for a specified number of months to determine if prices go up or down.
-    
-    Args:
-        month_end_df (pd.DataFrame): DataFrame with columns (cik, ticker, month_end_date, close_price, year_month)
-        trend_horizon_in_months (int): Number of months to look ahead for trend calculation
-        
-    Returns:
-        pd.DataFrame: DataFrame with columns (cik, ticker, month_end_date, trend_up_or_down, trend_5per_up, price_change)
-                     where trend_up_or_down is 1 for price going up, 0 for price going down,
-                     trend_5per_up is 1 for price going up more than 5%, 0 otherwise,
-                     and price_change is the ratio of future_close_price to close_price
-    """
-    print("📈 Computing price trends...")
-    print("=" * 50)
-    print(f"🔍 Trend horizon: {trend_horizon_in_months} months")
-    
-    if month_end_df.empty:
-        print("❌ No month-end data provided")
-        return pd.DataFrame()
-    
-    # Calculate trends using DataFrame join approach
-    print(f"\n📊 Calculating trends with {trend_horizon_in_months} month horizon...")
-    
-    # Add year_month_horizon column and create future price lookup
-    month_end_df = month_end_df.copy()
-    month_end_df['year_month_horizon'] = month_end_df['year_month'] + trend_horizon_in_months
-    
-    # Create future price lookup table
-    future_df = month_end_df[['cik', 'ticker', 'year_month', 'close_price']].rename(columns={
-        'year_month': 'year_month_horizon',
-        'close_price': 'future_close_price'
-    })
-    
-    # Join to get future prices and calculate trends
-    trend_df = (month_end_df.merge(future_df, on=['cik', 'ticker', 'year_month_horizon'], how='left')
-                .dropna(subset=['future_close_price'])
-                .assign(
-                    trend_up_or_down=lambda x: (x['future_close_price'] > x['close_price']).astype(int),
-                    trend_5per_up=lambda x: (x['future_close_price'] > x['close_price'] * 1.05).astype(int),
-                    price_return =lambda x: x['future_close_price'] / x['close_price']
-                )
-                [['cik', 'ticker', 'month_end_date', 'trend_up_or_down', 'trend_5per_up', 'price_return']])
-    print(f"📊 Trend records: {len(trend_df)}")
-    
-    # Summary statistics
-    if len(trend_df) > 0:
-        up_trends = trend_df['trend_up_or_down'].sum()
-        up_5per_trends = trend_df['trend_5per_up'].sum()
-        print(f"\n📈 Trend Summary:")
-        print(f"  📈 Up trends: {up_trends} ({up_trends/len(trend_df)*100:.1f}%)")
-        print(f"  📉 Down trends: {len(trend_df) - up_trends} ({(len(trend_df) - up_trends)/len(trend_df)*100:.1f}%)")
-        print(f"  🚀 5%+ up trends: {up_5per_trends} ({up_5per_trends/len(trend_df)*100:.1f}%)")
-        print(f"  📊 Total trends: {len(trend_df)}")
-        
-        # Price change statistics
-        avg_price_change = trend_df['price_return'].mean()
-        median_price_change = trend_df['price_return'].median()
-        min_price_change = trend_df['price_return'].min()
-        max_price_change = trend_df['price_return'].max()
-        print(f"\n💰 Price Change Statistics:")
-        print(f"  📊 Average price change: {avg_price_change:.3f} ({((avg_price_change-1)*100):+.1f}%)")
-        print(f"  📊 Median price change: {median_price_change:.3f} ({((median_price_change-1)*100):+.1f}%)")
-        print(f"  📉 Min price change: {min_price_change:.3f} ({((min_price_change-1)*100):+.1f}%)")
-        print(f"  📈 Max price change: {max_price_change:.3f} ({((max_price_change-1)*100):+.1f}%)")
-    
-    print(f"\n✅ Price trend calculation completed!")
-    return trend_df
 
 
 

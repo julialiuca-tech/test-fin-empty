@@ -104,15 +104,15 @@ def get_fallback_datasets():
     datasets = []
     
     # Quarterly datasets (2009-2024)
-    for year in range(2009, 2025):
+    for year in range(2024, 2026):
         for quarter in range(1, 5):
-            # Skip future quarters
-            if year == 2024 and quarter > 2:  # As of 2024, Q3 and Q4 might not be available yet
-                continue
+            # # Skip future quarters
+            # if year == 2024 and quarter > 2:  # As of 2024, Q3 and Q4 might not be available yet
+            #     continue
             datasets.append(f"{base_url}{year}q{quarter}.zip")
     
     # Annual datasets (if they exist)
-    for year in range(2009, 2025):
+    for year in range(2024, 2026):
         datasets.append(f"{base_url}{year}.zip")
     
     print(f"Using fallback list with {len(datasets)} potential datasets")

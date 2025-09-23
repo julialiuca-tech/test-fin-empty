@@ -1,30 +1,29 @@
-from utility_data import prep_data, QUARTER_DAYS, DAYS_TO_QUARTER, print_featurization, read_tags_to_featurize, get_cik_to_ticker_mapping
+from utility_data import load_and_join_sec_xbrl_data, print_featurization, read_tags_to_featurize, get_cik_ticker_mapping
+from config import (
+    SAVE_DIR, DATA_BASE_DIR, FEATURIZED_ALL_QUARTERS_FILE, FEATURE_COMPLETENESS_RANKING_FILE,
+    FEATURIZED_SIMPLIFIED_FILE, QUARTER_FEATURIZED_PATTERN, DEFAULT_K_TOP_TAGS,
+    DEFAULT_MIN_COMPLETENESS, DEFAULT_DEBUG_FLAG, DEFAULT_N_QUARTERS_HISTORY_COMP
+)
 import pandas as pd
 import numpy as np
-import os 
+import os
 
 # =============================================================================
-# CONSTANTS AND CONFIGURATION
+# QUARTER MAPPING CONSTANTS
 # =============================================================================
 
-# Directory paths
-SAVE_DIR = '/Users/juanliu/Workspace/git_test/SEC_data_explore/processed_data/'
-DATA_BASE_DIR = 'data/'
+# Quarter to days mapping
+QUARTER_DAYS = {
+    0: 0,      # No quarter
+    1: 91,     # 1 quarter
+    2: 182,    # 2 quarters  
+    3: 273,    # 3 quarters
+    4: 365,    # 4 quarters (1 year)
+    8: 730     # 8 quarters (2 years)
+}
 
-# File names
-FEATURIZED_ALL_QUARTERS_FILE = 'featurized_all_quarters.csv'
-FEATURE_COMPLETENESS_RANKING_FILE = 'feature_completeness_ranking.csv'
-FEATURIZED_SIMPLIFIED_FILE = 'featurized_simplified.csv'
-
-# Quarter file naming pattern
-QUARTER_FEATURIZED_PATTERN = '{}_featurized.csv'  # Format: 2022q1_featurized.csv
-
-# Default parameters
-DEFAULT_K_TOP_TAGS = 250
-DEFAULT_N_QUARTERS = 4
-DEFAULT_MIN_COMPLETENESS = 15.0
-DEFAULT_DEBUG_FLAG = True
-
+# Reverse mapping: days to quarter
+DAYS_TO_QUARTER = {v: k for k, v in QUARTER_DAYS.items()}
 
 def segment_group_summary(df_joined, form_type, debug_print=DEFAULT_DEBUG_FLAG):
     """
@@ -177,15 +176,10 @@ def segment_group_summary(df_joined, form_type, debug_print=DEFAULT_DEBUG_FLAG):
             f"remaining_groups ({len(remaining_groups)}) != " \
             f"max_value_records ({len(max_value_records)})"
     
-    # Clean up intermediate variables to free memory
-    del single_segment_groups, multi_segment_with_null, remaining_groups
-    
     # Combine all summary records efficiently
     if summary_records:
         # Use concat with ignore_index=True for better performance
         df_summary = pd.concat(summary_records, ignore_index=True, copy=False)
-        # Clean up the list after concatenation
-        del summary_records
     else:
         df_summary = pd.DataFrame()
     
@@ -203,7 +197,79 @@ def segment_group_summary(df_joined, form_type, debug_print=DEFAULT_DEBUG_FLAG):
 
 
 
-def history_comparisons(df, N_quarters=DEFAULT_N_QUARTERS, debug_print=DEFAULT_DEBUG_FLAG):
+def validate_and_fix_dates(df, date_column, debug_print=False):
+    """
+    Validate and fix potential date typos in YYYYMMDD format.
+    
+    Common issues detected and fixed:
+    - Year typos: 29230630 -> 20230630 (29 -> 20), 28230630 -> 20230630 (28 -> 20), etc.
+    - Month typos: 20231301 -> 20230301 (13 -> 03)
+    - Day typos: 20230632 -> 20230630 (32 -> 30)
+    - Future dates beyond reasonable range
+    
+    Args:
+        df (DataFrame): Input dataframe
+        date_column (str): Name of the date column to validate
+        debug_print (bool): Whether to print debug information (ignored for corrections)
+        
+    Returns:
+        DataFrame: DataFrame with corrected dates
+    """
+    df_work = df.copy()
+    
+    if date_column not in df_work.columns:
+        print(f"⚠️  Column '{date_column}' not found in dataframe")
+        return df_work
+    
+    # Convert to string for easier manipulation
+    df_work[date_column] = df_work[date_column].astype(str)
+    
+    # Track corrections made
+    corrections_made = []
+    
+    def fix_date_typo(date_str):
+        """Fix common date typos in YYYYMMDD format"""
+        if len(date_str) != 8 or not date_str.isdigit():
+            return date_str  # Skip non-standard formats
+        
+        year = date_str[:4]
+        month = date_str[4:6]
+        day = date_str[6:8]
+        
+        # Fix year typos - more general approach for 2x, 3x, 4x, etc. -> 20xx
+        if int(year) > 2500:  # Any future year beyond 2025
+            # Extract last 2 digits and prepend '20'
+            year = '20' + year[2:]
+            corrected_date = year + month + day
+            corrections_made.append(f"{date_str} -> {corrected_date}")
+            return corrected_date
+        
+        return date_str
+    
+    # Apply date fixing
+    df_work[date_column] = df_work[date_column].apply(fix_date_typo)
+    
+    # Always report corrections if any were made (bypass debug_print flag)
+    if corrections_made:
+        print(f"🔧 Date corrections detected in column '{date_column}':")
+        unique_corrections = list(set(corrections_made))
+        for correction in unique_corrections:
+            print(f"   {correction}")
+        print(f"   Total corrections: {len(corrections_made)}")
+        
+        # Ask user for confirmation
+        response = input("\n❓ Do you want to apply these date corrections? (y/n): ").lower().strip()
+        if response in ['y', 'yes']:
+            print("✅ Applying date corrections...")
+            return df_work
+        else:
+            print("❌ Date corrections cancelled. Returning original data.")
+            return df
+    
+    return df_work
+
+
+def history_comparisons(df, debug_print=DEFAULT_DEBUG_FLAG):
     """
     Performs historical comparisons for SEC filing data.
     
@@ -217,7 +283,6 @@ def history_comparisons(df, N_quarters=DEFAULT_N_QUARTERS, debug_print=DEFAULT_D
     
     Args:
         df (DataFrame): Input dataframe with SEC filing data
-        N_quarters (int, default=4): Number of quarters to featurize
     
     Returns:
         DataFrame: Processed dataframe with historical comparisons with columns
@@ -238,6 +303,10 @@ def history_comparisons(df, N_quarters=DEFAULT_N_QUARTERS, debug_print=DEFAULT_D
     
     # Convert ddate to datetime for proper date calculations
     df_work = df.copy()
+    
+    # Validate and fix potential date typos before conversion
+    df_work = validate_and_fix_dates(df_work, 'ddate', debug_print)
+    
     df_work['ddate'] = pd.to_datetime(df_work['ddate'], format='%Y%m%d')
     
     # Group by ['cik', 'name', 'tag', 'segments', 'qtrs'] and aggregate
@@ -306,7 +375,9 @@ def history_comparisons(df, N_quarters=DEFAULT_N_QUARTERS, debug_print=DEFAULT_D
     return grouped_history
 
 
-def organize_feature_dataframe(grouped_history, df_tags_to_featurize, N_quarters=DEFAULT_N_QUARTERS, 
+def organize_feature_dataframe(grouped_history, 
+                               df_tags_to_featurize, 
+                               N_qtrs_history_comp, 
                                debug_print=DEFAULT_DEBUG_FLAG):
     """
     Reorganizes the grouped_history dataframe into a featurized format with columns for
@@ -318,7 +389,7 @@ def organize_feature_dataframe(grouped_history, df_tags_to_featurize, N_quarters
      'quarter_intervals', 'percentage_diffs']. 
     - df_tags_to_featurize (DataFrame): DataFrame with columns ['rank', 'tag'] 
         specifying which tags to featurize
-    - N_quarters (int, default=4): Number of quarters to featurize
+    - N_qtrs_history_comp (int, default=4): # of quarters to featurize history comparisons
     
    The output df_featurized dataframe should have one row per distinct 
    ['cik', 'period', 'form'] tuple. 
@@ -383,12 +454,12 @@ def organize_feature_dataframe(grouped_history, df_tags_to_featurize, N_quarters
     
     # Convert quarter_intervals to int and filter for desired quarters
     df_exploded['quarter_intervals'] = df_exploded['quarter_intervals'].astype(int)
-    df_exploded = df_exploded[df_exploded['quarter_intervals'].between(1, N_quarters)]
+    df_exploded = df_exploded[df_exploded['quarter_intervals'].between(1, N_qtrs_history_comp)]
     
     # Create pivot table for historical changes - collect all quarters first
     quarter_dataframes = []
     
-    for q in range(1, N_quarters + 1): 
+    for q in range(1, N_qtrs_history_comp + 1): 
         
         # Filter for this specific quarter
         quarter_data = df_exploded[df_exploded['quarter_intervals'] == q]
@@ -433,7 +504,7 @@ def organize_feature_dataframe(grouped_history, df_tags_to_featurize, N_quarters
     expected_columns = ['cik', 'period', 'form']
     for tag_qtrs in unique_tag_qtrs:
         expected_columns.append(f'{tag_qtrs}_current')
-        for q in range(1, N_quarters + 1):
+        for q in range(1, N_qtrs_history_comp + 1):
             expected_columns.append(f'{tag_qtrs}_change_q{q}')
     
     # Add missing columns with NaN values efficiently using concat
@@ -456,7 +527,7 @@ def organize_feature_dataframe(grouped_history, df_tags_to_featurize, N_quarters
     if debug_print:
         print(f"ORGANIZE_FEATURE_DATAFRAME: ")
         print(f"Final dataframe shape: {df_featurized.shape}")
-        print(f"Feature columns created: {len(unique_tag_qtrs)} (tag,qtrs) combinations × ({N_quarters} quarters + 1 current) = {len(unique_tag_qtrs) * (N_quarters + 1)} features")
+        print(f"Feature columns created: {len(unique_tag_qtrs)} (tag,qtrs) combinations × ({N_qtrs_history_comp} quarters + 1 current) = {len(unique_tag_qtrs) * (N_qtrs_history_comp + 1)} features")
     
     return df_featurized
 
@@ -537,14 +608,16 @@ def summarize_feature_completeness(df_features):
     return feature_completeness_df 
 
 
-def featurize_quarter_data(data_directory, df_tags_to_featurize, N_quarters=DEFAULT_N_QUARTERS, 
+def featurize_quarter_data(data_directory, 
+                           df_tags_to_featurize, 
+                           N_qtrs_history_comp, 
                            debug_print=DEFAULT_DEBUG_FLAG):
     """
     Top-level function to featurize quarterly SEC data for both 10-Q and 10-K forms.
     Args:
         data_directory (str): Path to data directory (e.g., 'data/2022q1')
         df_tags_to_featurize (DataFrame): DataFrame with columns ['rank', 'tag'] specifying which tags to featurize
-        N_quarters (int, default=4): Number of quarters to featurize
+        N_qtrs_history_comp (int, default=4): Number of quarters to featurize
     Returns:
         DataFrame: Combined featurized dataframe with both 10-Q and 10-K features.
         Single row per (cik, period) with best available feature values
@@ -557,22 +630,21 @@ def featurize_quarter_data(data_directory, df_tags_to_featurize, N_quarters=DEFA
     - Subsequent form types (10-K) only fill missing/null values in existing features 
     """
     
-    # Load data using prep_data() 
-    df_joined = prep_data([data_directory]) 
+    # Load data using load_and_join_sec_xbrl_data() 
+    df_joined = load_and_join_sec_xbrl_data([data_directory]) 
     
     # Process both 10-Q and 10-K forms
     form_types = ['10-Q', '10-K'] 
-    form_count = 0  
     df_featurize_qtr = pd.DataFrame()
 
-    for form_type in form_types: 
+    for i, form_type in enumerate(form_types): 
          
         df_summary = segment_group_summary(df_joined, form_type=form_type) 
         if len(df_summary) > 0: 
-            grouped_history = history_comparisons(df_summary, N_quarters=N_quarters)
-            df_features = organize_feature_dataframe(grouped_history, df_tags_to_featurize, N_quarters=N_quarters)
+            grouped_history = history_comparisons(df_summary)
+            df_features = organize_feature_dataframe(grouped_history, df_tags_to_featurize, N_qtrs_history_comp=N_qtrs_history_comp)
              
-            if (form_count == 0):
+            if i == 0:
                 df_featurize_qtr = df_features 
             else:
                 df_featurize_qtr = \
@@ -583,15 +655,14 @@ def featurize_quarter_data(data_directory, df_tags_to_featurize, N_quarters=DEFA
             if debug_print:
                 print(f"FEATURIZE_QUARTER_DATA: for {form_type} ...")
                 print(f"Getting features with shape: {df_features.shape}")
-                print(f"Consolidated with shape: {df_featurize_qtr.shape}")
-
-            form_count += 1  
+                print(f"Consolidated with shape: {df_featurize_qtr.shape}")  
     
     return df_featurize_qtr
 
 
 def featurize_multi_qtrs(data_directories, 
-                         df_tags_to_featurize, N_quarters=DEFAULT_N_QUARTERS, 
+                         df_tags_to_featurize, 
+                         N_qtrs_history_comp, 
                          save_dir=SAVE_DIR, 
                          debug_print=DEFAULT_DEBUG_FLAG):
     """
@@ -606,7 +677,7 @@ def featurize_multi_qtrs(data_directories,
         else:
             df_featurized_quarter = featurize_quarter_data(data_directory, 
                                                         df_tags_to_featurize, 
-                                                        N_quarters=N_quarters)
+                                                        N_qtrs_history_comp)
             df_featurized_quarter.drop('form', axis=1, inplace=True)
             df_featurized_quarter.to_csv(save_file, index=False)
 
@@ -655,7 +726,7 @@ def simplify_featurized_data(processed_data_dir=SAVE_DIR, min_completeness=DEFAU
     
     # Step 2: Filter out CIKs that don't map to tickers
     print("🔍 Filtering CIKs that don't map to ticker symbols...")
-    cik_to_ticker = get_cik_to_ticker_mapping()
+    cik_to_ticker, ticker_to_cik = get_cik_ticker_mapping()
     
     if cik_to_ticker:
         # Convert CIK to string with zero padding for comparison
@@ -744,7 +815,8 @@ if __name__ == "__main__":
         else:
             # Process all quarters using featurize_multi_qtrs
             print(f"\nProcessing all quarters with featurize_multi_qtrs...")
-            featurize_multi_qtrs(quarter_directories, df_tags_to_featurize, N_quarters=DEFAULT_N_QUARTERS)
+            featurize_multi_qtrs(quarter_directories, df_tags_to_featurize, 
+                                 N_qtrs_history_comp= DEFAULT_N_QUARTERS_HISTORY_COMP)
         
         # Simplify the featurized data and save to CSV
         print(f"\nSimplifying featurized data...")

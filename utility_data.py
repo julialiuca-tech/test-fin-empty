@@ -3,22 +3,7 @@ import numpy as np
 import requests
 import os
 import json
-
-DATA_DIR = 'data/'
-
-# Quarter boundaries mapping for time interval calculations
-QUARTER_DAYS = {0: 0, 
-                1: 91, 
-                2: 182, 
-                3: 273, 
-                4: 365, 
-                5: 456, 
-                6: 547, 
-                7: 638, 
-                8: 730 }
-
-# Reverse mapping for efficient lookup: days -> quarter_number
-DAYS_TO_QUARTER = {v: k for k, v in QUARTER_DAYS.items()}
+from config import DATA_DIR, STOCK_DIR
 
 
 def clean_cik_dup_submissions(submissions):
@@ -70,10 +55,15 @@ def clean_cik_dup_submissions(submissions):
         return submissions.copy()
 
 
-def prep_data(data_dir):
+def load_and_join_sec_xbrl_data(data_dir):
     """
-    Prepares the data for exploration. 
-    Returns a dataframe with the joined data. 
+    Loads and joins SEC XBRL data from multiple quarters.
+    
+    Args:
+        data_dir (list): List of directory paths containing SEC data files
+        
+    Returns:
+        pd.DataFrame: Joined dataframe with SEC XBRL data from all quarters
     """ 
     df_joined = pd.DataFrame()
     
@@ -210,12 +200,14 @@ def print_featurization(df_featurized, cik, period, tag, qtrs):
     print(f"{'='*60}")
 
 
-def get_cik_to_ticker_mapping():
+def get_cik_ticker_mapping():
     """
     Get CIK to ticker symbol mapping from SEC's company tickers JSON file.
     
     Returns:
-        dict: Mapping of CIK (str) to ticker symbol (str)
+        tuple: (cik_to_ticker, ticker_to_cik) dictionaries
+            - cik_to_ticker: Mapping of CIK (str) to ticker symbol (str)
+            - ticker_to_cik: Mapping of ticker symbol (str) to CIK (str)
     """
     try:
         # SEC's official company tickers JSON file
@@ -231,19 +223,22 @@ def get_cik_to_ticker_mapping():
         
         data = response.json()
         
-        # Convert to CIK -> ticker mapping
+        # Convert to both CIK -> ticker and ticker -> CIK mappings
         cik_to_ticker = {}
+        ticker_to_cik = {}
         for entry in data.values():
             cik = str(entry['cik_str']).zfill(10)  # Pad CIK to 10 digits
             ticker = entry['ticker']
             cik_to_ticker[cik] = ticker
+            ticker_to_cik[ticker] = cik
             
         print(f"✅ Loaded {len(cik_to_ticker)} CIK->ticker mappings from SEC")
-        return cik_to_ticker
+        print(f"✅ Loaded {len(ticker_to_cik)} ticker->CIK mappings from SEC")
+        return cik_to_ticker, ticker_to_cik
         
     except Exception as e:
         print(f"❌ Error loading CIK->ticker mapping: {e}")
-        return {}
+        return {}, {}
 
 
 
@@ -273,3 +268,260 @@ def load_company_tickers_exchange_mappings():
     
     print(f"✅ Loaded SEC mappings for {len(ticker_mapping)} companies")
     return ticker_mapping, exchange_mapping
+
+
+def remove_cik_w_missing_month(month_end_df):
+    """
+    Remove (cik, ticker) tuples that have inconsecutive year_month records.
+    
+    This function identifies (cik, ticker) pairs with missing months in their data
+    and removes all records for those pairs from the DataFrame. 
+    Missing months may happen if a company gets delisted or goes onto the
+    OTC (over the counter) market. 
+    
+    Args:
+        month_end_df (pd.DataFrame): DataFrame with columns 
+        ['cik', 'ticker', 'month_end_date', 'close_price', 'year_month']
+        
+    Returns:
+        pd.DataFrame: Filtered DataFrame with only (cik, ticker) pairs that 
+        have consecutive months
+    """
+    if month_end_df.empty:
+        print("❌ No data provided for processing")
+        return month_end_df
+    
+    # Check required columns
+    required_cols = ['cik', 'ticker', 'year_month']
+    if not all(col in month_end_df.columns for col in required_cols):
+        print(f"❌ Missing required columns. Need: {required_cols}")
+        return month_end_df
+    
+    violations = []
+    
+    # Group by (cik, ticker) and check each pair
+    for (cik, ticker), group in month_end_df.groupby(['cik', 'ticker']):
+        # Sort by year_month
+        group = group.sort_values('year_month')
+        months = group['year_month'].tolist()
+        
+        # Check if months are consecutive
+        is_consecutive = True
+        missing_months = []
+        
+        if len(months) > 1:
+            # Convert periods to integers for easier comparison
+            month_ints = [int(str(month).replace('-', '')) for month in months]
+            
+            for i in range(len(month_ints) - 1):
+                current_month = month_ints[i]
+                next_month = month_ints[i + 1]
+                
+                # Calculate expected next month
+                if current_month % 100 == 12:  # December
+                    expected_next = (current_month // 100 + 1) * 100 + 1  # Next year, January
+                else:
+                    expected_next = current_month + 1
+                
+                if next_month != expected_next:
+                    is_consecutive = False
+                    # Find missing months between current and next
+                    missing_start = current_month
+                    missing_end = next_month
+                    
+                    # Generate missing months
+                    temp_month = missing_start
+                    while temp_month < missing_end:
+                        if temp_month % 100 == 12:
+                            temp_month = (temp_month // 100 + 1) * 100 + 1
+                        else:
+                            temp_month += 1
+                        if temp_month < missing_end:
+                            missing_months.append(f"{temp_month//100:04d}-{temp_month%100:02d}")
+        
+        if not is_consecutive:
+            violations.append((cik, ticker, missing_months))
+    
+    # Remove records for (cik, ticker) pairs with missing months
+    if violations:
+        print(f"Removing {len(violations)} (cik, ticker) pairs with missing months:")
+        for cik, ticker, missing_months in violations:
+            print(f"  CIK: {cik}, Ticker: {ticker}")
+            if missing_months:
+                print(f"    Missing months: {missing_months}")
+        
+        # Create mask to keep only records not in violations
+        violation_pairs = [(cik, ticker) for cik, ticker, _ in violations]
+        mask = ~month_end_df.apply(lambda row: (row['cik'], row['ticker']) in violation_pairs, axis=1)
+        filtered_df = month_end_df[mask].copy()
+        
+        print(f"Removed {len(month_end_df) - len(filtered_df)} records")
+        return filtered_df
+    else:
+        print("No (cik, ticker) pairs with missing months found")
+        return month_end_df
+
+
+def price_trend(month_end_df, trend_horizon_in_months):
+    """
+    Generate up-or-down trend labels for month-end prices with look-ahead horizon.
+    
+    This function takes month-end price data and calculates trend labels by looking
+    ahead for a specified number of months to determine if prices go up or down.
+    
+    Args:
+        month_end_df (pd.DataFrame): DataFrame with columns (cik, ticker, month_end_date, close_price, year_month)
+        trend_horizon_in_months (int): Number of months to look ahead for trend calculation
+        
+    Returns:
+        pd.DataFrame: DataFrame with columns (cik, ticker, month_end_date, trend_up_or_down, trend_5per_up, price_change)
+                     where trend_up_or_down is 1 for price going up, 0 for price going down,
+                     trend_5per_up is 1 for price going up more than 5%, 0 otherwise,
+                     and price_change is the ratio of future_close_price to close_price
+    """
+    print("📈 Computing price trends...")
+    print("=" * 50)
+    print(f"🔍 Trend horizon: {trend_horizon_in_months} months")
+    
+    if month_end_df.empty:
+        print("❌ No month-end data provided")
+        return pd.DataFrame()
+    
+    # Calculate trends using DataFrame join approach
+    print(f"\n📊 Calculating trends with {trend_horizon_in_months} month horizon...")
+    
+    # Add year_month_horizon column and create future price lookup
+    month_end_df = month_end_df.copy()
+    month_end_df['year_month_horizon'] = month_end_df['year_month'] + trend_horizon_in_months
+    
+    # Create future price lookup table
+    future_df = month_end_df[['cik', 'ticker', 'year_month', 'close_price']].rename(columns={
+        'year_month': 'year_month_horizon',
+        'close_price': 'future_close_price'
+    })
+    
+    # Join to get future prices and calculate trends
+    trend_df = (month_end_df.merge(future_df, on=['cik', 'ticker', 'year_month_horizon'], how='left')
+                .dropna(subset=['future_close_price'])
+                .assign(
+                    trend_up_or_down=lambda x: (x['future_close_price'] > x['close_price']).astype(int),
+                    trend_5per_up=lambda x: (x['future_close_price'] > x['close_price'] * 1.05).astype(int),
+                    price_return=lambda x: x['future_close_price'] / x['close_price']
+                )
+                [['cik', 'ticker', 'month_end_date', 'trend_up_or_down', 'trend_5per_up', 
+                'price_return', 'close_price', 'future_close_price']])
+    print(f"📊 Trend records: {len(trend_df)}")
+
+    return trend_df
+
+
+def filter_by_date_range(df, date_col, start_date='2000-01-01', end_date='2025-07-01'): 
+    return df[(df[date_col] >= pd.to_datetime(start_date)) & 
+              (df[date_col] <= pd.to_datetime(end_date))]
+
+def filter_by_price_range(df, price_col, min_price, max_price):
+    return df[(df[price_col] >= min_price) & (df[price_col] <= max_price)]
+
+
+def filter_by_date_continuity(df, date_col, stop_date='2025-01-01', gap_in_days=7): 
+    """
+    Filter records by date continuity. 
+    The stock data is supposed to be continuous, with price record for every trading day, 
+    and thus we should observe only small gaps (holidays, weekends, etc.). 
+    If a ticker has large gaps (exceeding gap_in_days), remove the records. 
+
+    Args:
+        df (DataFrame): DataFrame with date column
+        date_col (str): Name of the date column
+        gap_in_days (int): Maximum gap in days
+
+    Returns:
+        df_filtered (DataFrame): Filtered DataFrame
+        removed_ticker (list): List of dictionaries with detailed information about removed tickers.
+                              Each dictionary contains:
+                              - 'ticker': ticker symbol
+                              - 'max_gap_days': maximum gap in days
+                              - 'gap_start_date': date when the gap starts (YYYY-MM-DD)
+                              - 'gap_end_date': date when the gap ends (YYYY-MM-DD)
+    """
+    if df.empty:
+        print("❌ No data provided for filtering")
+        return df, []
+    
+    # Check if required columns exist
+    if date_col not in df.columns:
+        print(f"❌ Date column '{date_col}' not found in DataFrame")
+        return df, []
+    
+    # Check if ticker column exists (assuming it's named 'ticker')
+    if 'ticker' not in df.columns:
+        print("❌ Ticker column not found in DataFrame")
+        return df, []
+    
+    print(f"🔍 Filtering by date continuity (max gap: {gap_in_days} days)...")
+    
+    # Make a copy to avoid modifying original
+    df_work = df.copy()
+    
+    # Ensure date column is datetime
+    df_work[date_col] = pd.to_datetime(df_work[date_col])
+    
+    # Sort by ticker and date
+    df_work = df_work.sort_values(['ticker', date_col]).reset_index(drop=True)
+    
+    # Calculate date differences within each ticker group using shift
+    df_work['date_diff'] = df_work.groupby('ticker')[date_col].diff()
+    
+    # Convert to days (first row of each ticker will be NaN, which is expected)
+    df_work['gap_days'] = df_work['date_diff'].dt.days
+    
+    # Find tickers with gaps exceeding the threshold
+    # We need to check if ANY gap in a ticker's data exceeds the threshold
+    ticker_max_gaps = df_work.groupby('ticker')['gap_days'].max()
+    problematic_tickers = ticker_max_gaps[ticker_max_gaps > gap_in_days].index.tolist()
+    
+    if problematic_tickers:
+        print(f"🗑️  Found {len(problematic_tickers)} tickers with gaps > {gap_in_days} days:")
+        
+        # Create a DataFrame with problematic tickers and their max gaps using vectorized operations
+        problematic_df = pd.DataFrame({
+            'ticker': problematic_tickers,
+            'max_gap_days': ticker_max_gaps[problematic_tickers].values
+        })
+        
+        # Find records where the max gap occurs for each ticker using vectorized operations
+        # First, create a mask for records that have the max gap for their ticker
+        max_gap_mask = df_work.groupby('ticker')['gap_days'].transform('max') == df_work['gap_days']
+        max_gap_records = df_work[max_gap_mask & df_work['ticker'].isin(problematic_tickers)]
+        
+        # Merge with problematic_df to get the max gap info
+        gap_info = max_gap_records.merge(problematic_df, on='ticker', how='right')
+        
+        # Calculate gap start dates vectorized
+        gap_info['gap_start_date'] = gap_info[date_col] - pd.to_timedelta(gap_info['max_gap_days'], unit='D')
+        
+        # Create the detailed information list using vectorized operations
+        removed_ticker_info = gap_info.apply(lambda row: {
+            'ticker': row['ticker'],
+            'max_gap_days': int(row['max_gap_days']),
+            'gap_start_date': row['gap_start_date'].strftime('%Y-%m-%d'),
+            'gap_end_date': row[date_col].strftime('%Y-%m-%d')
+        }, axis=1).tolist()
+
+        # Filter out problematic tickers
+        df_filtered = df_work[~df_work['ticker'].isin(problematic_tickers)].copy()
+        
+        # Remove helper columns
+        df_filtered = df_filtered.drop(['date_diff', 'gap_days'], axis=1)
+        
+        removed_count = len(df) - len(df_filtered)
+        print(f"📊 Removed {removed_count:,} records from {len(problematic_tickers)} tickers")
+        
+        return df_filtered, removed_ticker_info
+    else:
+        print(f"✅ All tickers have gaps ≤ {gap_in_days} days")
+        # Remove helper columns
+        df_work = df_work.drop(['date_diff', 'gap_days'], axis=1)
+        return df_work, []
+
+

@@ -21,18 +21,14 @@ import pandas as pd
 # Import utility functions
 from utility_binary_classifier import split_train_val_by_column, baseline_binary_classifier
 from utility_data import load_company_tickers_exchange_mappings
+from config import COMPLETENESS_THRESHOLD, Y_LABEL, SPLIT_STRATEGY, SAVE_DIR, STOCK_DIR
 import xgboost as xgb
 import os
- 
-COMPLETENESS_THRESHOLD = 0.2
 
-featurized_data_file = 'data/featurized_2022/featurized_simplified.csv'
+featurized_data_file = os.path.join(SAVE_DIR, 'featurized_all_quarters.csv')
 
 trend_horizon_in_months = 1
-stock_trend_data_file = f'data/stock_202001_to_202507/price_trends_{trend_horizon_in_months}month.csv'
-Y_LABEL = 'trend_5per_up' # can be 'trend_up_or_down' or 'trend_5per_up'
-
-SPLIT_STRATEGY = {'cik': 'random'} # can be 'cik', 'date', or 'random'
+stock_trend_data_file = os.path.join(STOCK_DIR, f'price_trends_{trend_horizon_in_months}month.csv')
    
 
 def prepare_data_for_model(split_strategy=SPLIT_STRATEGY):
@@ -377,5 +373,9 @@ def main():
 
 
 if __name__ == "__main__":
-    # results = main()
+    results = main()
+
+    print("="*60)
+    print("Evaluating Investment Performance...")
+    print("="*60)
     evaluate_invest()
