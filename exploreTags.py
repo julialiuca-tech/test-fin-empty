@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
 import seaborn as sns
-from utility_data import prep_data, top_tags
+from utility_data import load_and_join_sec_xbrl_data, top_tags
 
 
 def tags_w_revenue_str(df_joined):
@@ -652,12 +652,12 @@ if __name__ == "__main__":
                 'data/2022q2', 
                 'data/2022q3', 
                 'data/2022q4']
-    df_joined = prep_data(data_dir) 
+    df_joined = load_and_join_sec_xbrl_data(data_dir) 
     top_tags(df_joined)  
     
     # now focus on Q1 data only
     data_dir = ['data/2022q1']
-    df_joined = prep_data(data_dir) 
+    df_joined = load_and_join_sec_xbrl_data(data_dir) 
 
     ## Run percent tag analysis for 2022q1
     # tags_w_percent_str(df_joined)
